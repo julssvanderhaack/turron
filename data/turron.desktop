@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Turrón
+GenericName=Video Player
+GenericName[es]=Reproductor de vídeo
+Comment=Lightweight, fast video player
+Comment[es]=Reproductor de vídeo ligero y rápido
+Exec=turron -- %U
+Icon=turron
+Terminal=false
+Categories=AudioVideo;Video;Player;
+StartupWMClass=turron
+MimeType=video/mp4;video/x-matroska;video/webm;video/x-msvideo;video/avi;video/quicktime;video/mpeg;video/mp2t;video/x-flv;video/x-ms-wmv;video/x-ms-asf;video/ogg;video/3gpp;video/3gpp2;video/x-m4v;video/vnd.avi;video/x-ogm+ogg;video/x-theora+ogg;video/dv;video/mp2p;video/x-mpeg2;video/vnd.rn-realvideo;video/x-matroska-3d;video/vnd.mpegurl;video/x-f4v;video/x-nsv;video/x-flic;video/divx;video/msvideo;video/x-avi;video/h264;video/h265;video/x-mjpeg;video/mj2;video/x-mng;video/x-ms-wmx;video/x-ms-wvx;video/x-sgi-movie;video/vnd.vivo;application/x-matroska;application/mxf;application/vnd.rn-realmedia;application/vnd.rn-realmedia-vbr;application/vnd.apple.mpegurl;application/x-mpegurl;application/ogg;

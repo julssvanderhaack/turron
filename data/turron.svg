@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <title>Turrón</title>
+  <!-- orejas -->
+  <path d="M18 60 L22 12 Q23 6 29 10 L62 34 Z" fill="#f28c28"/>
+  <path d="M110 60 L106 12 Q105 6 99 10 L66 34 Z" fill="#f28c28"/>
+  <path d="M27 44 L29 21 L47 35 Z" fill="#ffc9b0"/>
+  <path d="M101 44 L99 21 L81 35 Z" fill="#ffc9b0"/>
+  <!-- cabeza -->
+  <ellipse cx="64" cy="72" rx="52" ry="46" fill="#f28c28"/>
+  <!-- rayas atigradas -->
+  <path d="M64 27 L59 46 Q64 50 69 46 Z" fill="#c9661a"/>
+  <path d="M46 31 L47 45 Q51 47 54 44 Z" fill="#c9661a"/>
+  <path d="M82 31 L81 45 Q77 47 74 44 Z" fill="#c9661a"/>
+  <path d="M13 70 L28 73 Q29 77 26 80 L14 80 Z" fill="#c9661a"/>
+  <path d="M115 70 L100 73 Q99 77 102 80 L114 80 Z" fill="#c9661a"/>
+  <!-- hocico -->
+  <ellipse cx="64" cy="92" rx="25" ry="19" fill="#fff3e2"/>
+  <!-- ojos -->
+  <ellipse cx="43" cy="68" rx="10" ry="11.5" fill="#fffbe8"/>
+  <ellipse cx="85" cy="68" rx="10" ry="11.5" fill="#fffbe8"/>
+  <ellipse cx="43" cy="68" rx="7.5" ry="9.5" fill="#6fae3c"/>
+  <ellipse cx="85" cy="68" rx="7.5" ry="9.5" fill="#6fae3c"/>
+  <ellipse cx="43" cy="68" rx="3" ry="8" fill="#22180f"/>
+  <ellipse cx="85" cy="68" rx="3" ry="8" fill="#22180f"/>
+  <circle cx="45.5" cy="63.5" r="2.2" fill="#fff"/>
+  <circle cx="87.5" cy="63.5" r="2.2" fill="#fff"/>
+  <!-- nariz: un botón de reproducir -->
+  <path d="M59.5 82.5 Q58.5 80.3 61 80.6 L71.5 85.3 Q73.5 86.5 71.5 87.7 L61 92.4 Q58.5 92.7 59.5 90.5 Z" fill="#e2607a"/>
+  <!-- boca -->
+  <path d="M64 93 Q64 101 56 101 M64 93 Q64 101 72 101" fill="none" stroke="#8a4a1a" stroke-width="2.4" stroke-linecap="round"/>
+  <!-- bigotes -->
+  <g stroke="#fff3e2" stroke-width="2" stroke-linecap="round">
+    <path d="M36 90 L8 84"/><path d="M36 96 L9 99"/>
+    <path d="M92 90 L120 84"/><path d="M92 96 L119 99"/>
+  </g>
+</svg>
