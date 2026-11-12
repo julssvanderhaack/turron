@@ -30,6 +30,8 @@ static inline double now_s(void)
 extern bool g_es;
 #define T(es, en) (g_es ? (es) : (en))
 
+void tr_stage(const char *what);         /* startup timing, printed with TURRON_TRACE */
+
 /* ---------- options ---------- */
 struct Opts {
     bool no_hw, fast, keep_open, fullscreen, no_resume, stats, no_subs;
@@ -157,6 +159,7 @@ bool osd_update(const struct OsdState *st, double sub_time,
 void osd_bar_geometry(int *x, int *y, int *w, int *h); /* seek bar hit box, px */
 
 /* ---------- GL renderer (gl.c) ---------- */
+void gl_prewarm(void *wl_display);                  /* optional: start loading the driver early */
 int  gl_init(void *wl_display, void *wl_surface, int w, int h);
 void gl_resize(int w, int h);
 void gl_set_frame(AVFrame *f, int rotation);        /* takes ownership of the reference */
@@ -177,6 +180,7 @@ struct WlCallbacks {
     void (*close)(void);
     void (*frame)(void);
 };
+int  wl_connect(void);
 int  wl_init(const struct WlCallbacks *cb, const char *title, int w, int h);
 int  wl_fd(void);
 void *wl_display_ptr(void);

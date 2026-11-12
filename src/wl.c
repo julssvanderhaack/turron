@@ -256,17 +256,26 @@ static void reg_global(void *d, struct wl_registry *r, uint32_t name, const char
 static void reg_remove(void *d, struct wl_registry *r, uint32_t name) { (void)d; (void)r; (void)name; }
 static const struct wl_registry_listener reg_listener = { reg_global, reg_remove };
 
-int wl_init(const struct WlCallbacks *c, const char *title, int w, int h)
+/* Connects and binds the globals; separate from wl_init so the GPU driver can be
+ * loaded in the background while the file is being opened. */
+int wl_connect(void)
 {
-    cb = *c;
-    def_w = log_w = w;
-    def_h = log_h = h;
+    if (dpy) return 0;
     dpy = wl_display_connect(NULL);
     if (!dpy) return -1;
     xkb = xkb_context_new(0);
     struct wl_registry *reg = wl_display_get_registry(dpy);
     wl_registry_add_listener(reg, &reg_listener, NULL);
     wl_display_roundtrip(dpy);
+    return 0;
+}
+
+int wl_init(const struct WlCallbacks *c, const char *title, int w, int h)
+{
+    cb = *c;
+    def_w = log_w = w;
+    def_h = log_h = h;
+    if (wl_connect() < 0) return -1;
     if (!comp || !wm) return -1;
     xdg_wm_base_add_listener(wm, &wm_listener, NULL);
     if (seat) wl_seat_add_listener(seat, &seat_listener, NULL);

@@ -130,10 +130,29 @@ static void tex_defaults(void)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
-int gl_init(void *wl_display, void *wl_surface, int w, int h)
+/* Loading the GPU driver is the slowest step of start-up and does not depend on the
+ * file, so it runs on its own thread while the file is opened. */
+static pthread_t th_warm;
+static bool warm_started, warm_ok;
+
+static void *warm_thread(void *wl_display)
 {
     dpy = eglGetPlatformDisplay(EGL_PLATFORM_WAYLAND_KHR, wl_display, NULL);
-    if (dpy == EGL_NO_DISPLAY || !eglInitialize(dpy, NULL, NULL)) return -1;
+    warm_ok = dpy != EGL_NO_DISPLAY && eglInitialize(dpy, NULL, NULL);
+    return NULL;
+}
+
+void gl_prewarm(void *wl_display)
+{
+    warm_started = pthread_create(&th_warm, NULL, warm_thread, wl_display) == 0;
+}
+
+int gl_init(void *wl_display, void *wl_surface, int w, int h)
+{
+    if (warm_started) pthread_join(th_warm, NULL);
+    else warm_thread(wl_display);
+    if (!warm_ok) return -1;
+    tr_stage("  eglInitialize");
     eglBindAPI(EGL_OPENGL_ES_API);
     static const EGLint cattr[] = { EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
         EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 0, EGL_NONE };
@@ -147,6 +166,7 @@ int gl_init(void *wl_display, void *wl_surface, int w, int h)
     ewin = wl_egl_window_create(wl_surface, w, h);
     surf = eglCreatePlatformWindowSurface(dpy, cfg, ewin, NULL);
     if (surf == EGL_NO_SURFACE || !eglMakeCurrent(dpy, surf, surf, ctx)) return -1;
+    tr_stage("  context+surface");
     eglSwapInterval(dpy, 0);            /* we pace ourselves with frame callbacks */
 
     const char *ext = (const char *)glGetString(GL_EXTENSIONS);
@@ -158,6 +178,7 @@ int gl_init(void *wl_display, void *wl_surface, int w, int h)
 
     prog_v = link_prog(FS_VIDEO);
     prog_o = link_prog(FS_OSD);
+    tr_stage("  shaders");
     glUseProgram(prog_v);
     glUniform1i(glGetUniformLocation(prog_v, "t0"), 0);
     glUniform1i(glGetUniformLocation(prog_v, "t1"), 1);

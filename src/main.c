@@ -34,6 +34,17 @@ static double ptr_x, ptr_y, last_click, last_drag_seek, scroll_acc;
 static double last_seek_at, last_seek_target, stats_at;
 static double t_start;
 
+void tr_stage(const char *what)
+{
+    static int on = -1;
+    static double t0, last;
+    if (on < 0) { on = getenv("TURRON_TRACE") != NULL; t0 = last = now_s(); }
+    if (!on) return;
+    double t = now_s();
+    fprintf(stderr, "stage %-22s +%6.1f ms  (total %7.1f ms)\n", what, (t - last) * 1e3, (t - t0) * 1e3);
+    last = t;
+}
+
 /* ------------------------------------------------------------- resume */
 static char *resume_path(void)
 {
@@ -323,7 +334,8 @@ static void on_resize(int w, int h, double s)
 }
 static void on_close(void) { quit = true; }
 static int n_callbacks;
-static void on_frame(void) { frame_pending = false; n_callbacks++; }
+static double last_callback;
+static void on_frame(void) { frame_pending = false; n_callbacks++; last_callback = now_s(); }
 
 /* ------------------------------------------------------------- MPRIS */
 static void m_play(void) { if (P.paused || ended) toggle_pause(); }
@@ -345,6 +357,7 @@ static double video_refresh(void)
         if (P.force_show) {
             P.force_show = false;
             P.await_video = false;
+            tr_stage("first frame popped");
             fq_pop();
             gl_set_frame(v.f, P.rotation);
             P.shown++;
@@ -442,6 +455,16 @@ static double tick(void)
     }
     double d = video_refresh();
     if (d < wait) wait = d;
+    static int seen_jumps;
+    if (P.jumps < seen_jumps) seen_jumps = 0;
+    if (P.jumps > seen_jumps) {
+        if (seen_jumps == 0) {
+            set_toast("%s", T("Vídeo demasiado pesado para este equipo: la imagen irá a saltos",
+                              "Video too heavy for this computer: the picture will skip"));
+            toast_until = t + 5;
+        }
+        seen_jumps = P.jumps;
+    }
     if (P.await_video) {
         if (t - P.await_video_since > 1.5 || P.v_eof_serial == P.serial) P.await_video = false;
         else if (wait > 0.05) wait = 0.05;
@@ -480,12 +503,17 @@ static double tick(void)
             gl_osd_upload(pix, stride, dirty, bbox);
             need_redraw = true;
         }
-        if (need_redraw && !frame_pending) {
+        /* Frame callbacks arrive a refresh late on some compositors, so waiting for
+         * one before every draw halves the frame rate. Draw whenever a picture is due
+         * and use the callbacks only to notice that the window is hidden. */
+        bool visible = t - last_callback < 0.25;
+        if (need_redraw && (!frame_pending || visible)) {
             need_redraw = false;
             frame_pending = true;
             wl_request_frame();
             if (O.shot_path && O.shot_at >= 0 && t - t_start >= O.shot_at) { gl_shot(O.shot_path); O.shot_at = -1; }
             gl_render();
+            { static int fr; if (fr < 2 && P.shown > 0) { fr++; tr_stage("frame rendered"); } }
         }
     }
 
@@ -546,6 +574,22 @@ static void usage(void)
              "      s subtitles · a audio · m mute · n/b next/previous · i statistics · 0-9 jump · q quit"));
 }
 
+/* File managers hand over file:// URIs with percent-escapes; FFmpeg wants the plain path. */
+static char *local_path(char *arg)
+{
+    if (strncmp(arg, "file://", 7)) return arg;
+    const char *p = arg + 7;
+    if (*p != '/') { p = strchr(p, '/'); if (!p) return arg; }      /* skip "localhost" */
+    char *out = malloc(strlen(p) + 1), *o = out;
+    for (; *p; p++) {
+        unsigned v;
+        if (*p == '%' && p[1] && p[2] && sscanf(p + 1, "%2x", &v) == 1) { *o++ = (char)v; p += 2; }
+        else *o++ = *p;
+    }
+    *o = 0;
+    return out;
+}
+
 int main(int argc, char **argv)
 {
     const char *loc = getenv("LC_ALL");
@@ -553,11 +597,12 @@ int main(int argc, char **argv)
     if (!loc || !*loc) loc = getenv("LANG");
     g_es = loc && !strncmp(loc, "es", 2);
 
+    tr_stage("start");
     files = calloc(argc, sizeof *files);
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        if (a[0] != '-' || !a[1]) { files[n_files++] = argv[i]; continue; }
-        if (!strcmp(a, "--")) { while (++i < argc) files[n_files++] = argv[i]; break; }
+        if (a[0] != '-' || !a[1]) { files[n_files++] = local_path(argv[i]); continue; }
+        if (!strcmp(a, "--")) { while (++i < argc) files[n_files++] = local_path(argv[i]); break; }
         if (!strcmp(a, "--help") || !strcmp(a, "-h")) { usage(); return 0; }
         if (!strcmp(a, "--version")) { printf("turron %s\n", TURRON_VERSION); return 0; }
         if (!strcmp(a, "--no-hw")) O.no_hw = true;
@@ -585,11 +630,15 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
     g_wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     t_start = now_s();
+    if (wl_connect() == 0) gl_prewarm(wl_display_ptr());
+    tr_stage("wl_connect");
     audio_init();
+    tr_stage("audio_init");
     osd_start();
 
     for (int i = 0; i < n_files && !P.opened; i++) open_file(i, O.start, -1);
     if (!P.opened) return 1;
+    tr_stage("open_file");
 
     int w = 960, h = 540;
     if (P.vi >= 0 && P.vid_w > 0 && P.vid_h > 0) {
@@ -607,6 +656,7 @@ int main(int argc, char **argv)
         player_close();
         return 1;
     }
+    tr_stage("wl_init");
     wl_get_size(&win_w, &win_h, &win_scale);
     if (gl_init(wl_display_ptr(), wl_surface_ptr(), win_w, win_h) < 0) {
         fprintf(stderr, "turron: %s\n", T("no se pudo iniciar OpenGL ES 3", "cannot initialise OpenGL ES 3"));
@@ -614,10 +664,12 @@ int main(int argc, char **argv)
         return 1;
     }
     gl_ready = true;
+    tr_stage("gl_init");
     osd_resize(win_w, win_h, win_scale);
     update_title();
     static const struct MprisCallbacks mcb = { toggle_pause, m_play, m_pause, m_stop, m_next, m_prev, m_seek_rel, m_set_pos, m_pos };
     mpris_init(&mcb);
+    tr_stage("mpris_init");
     sync_state();
     need_redraw = true;
 

@@ -717,6 +717,7 @@ int player_open(const char *path, double start, int audio_track)
     P.rotation = 0;
     P.demux_eof = false;
     P.dropped = P.shown = 0;
+    P.jumps = 0;
     P.v_eof_serial = P.a_eof_serial = 0;
 
     AVFormatContext *ic = avformat_alloc_context();
@@ -726,7 +727,9 @@ int player_open(const char *path, double start, int audio_track)
         fprintf(stderr, "turron: %s: %s\n", path, av_err2str(ret));
         return -1;
     }
+    tr_stage(" open_input");
     avformat_find_stream_info(ic, NULL);
+    tr_stage(" find_stream_info");
     P.ic = ic;
     free(P.path);
     P.path = strdup(path);
@@ -748,7 +751,9 @@ int player_open(const char *path, double start, int audio_track)
     find_external_subs(path);
 
     /* video */
+    tr_stage(" tracks+subs scan");
     init_hwdev();
+    tr_stage(" vaapi device");
     int vi = av_find_best_stream(ic, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     P.degraded = O.fast ? 1 : 0;
     P.no_exact = false;
@@ -771,6 +776,7 @@ int player_open(const char *path, double start, int audio_track)
         }
     }
 
+    tr_stage(" video decoder");
     /* audio: explicit choice, else the user's language, else FFmpeg's best guess */
     int at = -1;
     if (audio_track >= 0 && audio_track < P.n_atracks) at = audio_track;
@@ -804,6 +810,7 @@ int player_open(const char *path, double start, int audio_track)
         return -1;
     }
 
+    tr_stage(" audio decoder+stream");
     /* subtitles: sidecar file first; else forced/own-language track when the audio is foreign */
     int stk = -1;
     if (P.n_stracks > n_embedded) stk = n_embedded;

@@ -62,6 +62,7 @@ static void on_process(void *data)
             double delay = 0;
             if (pw_stream_get_time_n(stream, &t, sizeof t) == 0 && t.rate.denom)
                 delay = (double)t.delay * t.rate.num / t.rate.denom + (double)(t.queued + t.buffered) / rate;
+            if (P.await) tr_stage("audio anchored (clock runs)");
             clock_set(head - delay);
             if (P.await) P.await = false;
             clock_run(!P.paused);
