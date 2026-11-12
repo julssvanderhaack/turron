@@ -138,12 +138,17 @@ extern atomic_int g_volume;            /* 0..150 */
 extern atomic_bool g_mute;
 
 /* ---------- OSD + subtitles (osd.c) ---------- */
+enum { HIT_NONE, HIT_SEEK, HIT_PLAY, HIT_VOL_ICON, HIT_VOL, HIT_AUDIO, HIT_SUBS, HIT_FS, HIT_MENU, HIT_ROW0 = 100 };
 struct OsdState {
-    bool bar, hover_bar, paused;
+    bool bar, paused, mute, fullscreen;
     double pos, dur;
+    int volume;
+    int hover;                  /* HIT_* under the pointer */
+    int menu;                   /* 0 closed, 1 audio tracks, 2 subtitle tracks */
+    const char **items;         /* menu rows */
+    int n_items, cur_item, menu_scroll;
     const char *title;
     const char *toast;
-    const char *right;
     const char *stats;
 };
 void osd_start(void);                               /* background font init */
@@ -156,7 +161,9 @@ void osd_invalidate(void);
 /* Rebuilds the overlay if something changed. Returns true if pixels changed. */
 bool osd_update(const struct OsdState *st, double sub_time,
                 const uint8_t **pix, int *stride, int dirty[4], int bbox[4]);
-void osd_bar_geometry(int *x, int *y, int *w, int *h); /* seek bar hit box, px */
+int  osd_hit(double x, double y);                   /* HIT_* at that pixel */
+double osd_frac(int hit, double x);                 /* 0..1 along the seek bar or volume slider */
+int  osd_menu_rows(void);                           /* rows that fit in the open menu */
 
 /* ---------- GL renderer (gl.c) ---------- */
 void gl_prewarm(void *wl_display);                  /* optional: start loading the driver early */

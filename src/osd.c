@@ -354,11 +354,22 @@ static void fmt_time(char *out, size_t n, double t)
     else snprintf(out, n, "%d:%02d", s / 60, s % 60);
 }
 
+static void add_event(char *text)
+{
+    int id = ass_alloc_event(t_osd);
+    ASS_Event *ev = &t_osd->events[id];
+    ev->Start = 0;
+    ev->Duration = INT_MAX / 2;
+    ev->Style = t_osd->default_style;
+    ev->ReadOrder = id;
+    ev->Text = text;
+}
+
 static void add_text(int an, double x, double y, double size, const char *extra, const char *text)
 {
     if (!text || !*text) return;
     size_t len = strlen(text);
-    char *buf = malloc(len * 2 + 160), *o = buf;
+    char *buf = malloc(len * 2 + 240), *o = buf;
     o += sprintf(o, "{\\an%d\\pos(%.1f,%.1f)\\fs%.1f%s}", an, x, y, size, extra ? extra : "");
     for (const char *p = text; *p; p++) {
         if (*p == '{') *o++ = '(';
@@ -368,27 +379,159 @@ static void add_text(int an, double x, double y, double size, const char *extra,
         else *o++ = *p;
     }
     *o = 0;
-    int id = ass_alloc_event(t_osd);
-    ASS_Event *ev = &t_osd->events[id];
-    ev->Start = 0;
-    ev->Duration = INT_MAX / 2;
-    ev->Style = t_osd->default_style;
-    ev->ReadOrder = id;
-    ev->Text = buf;
+    add_event(buf);
 }
 
-static void bar_geom(int *x, int *y, int *w, int *h)
+/* Vector icon: `path` is an ASS drawing on a 20x20 grid, scaled to `size` px. */
+static void add_icon(double x, double y, double size, bool dim, const char *path)
 {
-    *x = (int)(18 * S);
-    *w = W - 2 * *x;
-    *h = (int)(4 * S);
-    *y = H - (int)(44 * S);
+    char *buf = malloc(strlen(path) * 3 + 200), *o = buf;
+    o += sprintf(o, "{\\an7\\pos(%.1f,%.1f)\\bord0\\shad0\\1c&H%s&\\p1}", x, y, dim ? "9A9A9A" : "FFFFFF");
+    double k = size / 20.0;
+    for (const char *p = path; *p;) {
+        if ((*p >= '0' && *p <= '9') || *p == '.') {
+            char *end;
+            double v = strtod(p, &end);
+            o += sprintf(o, "%.1f", v * k);
+            p = end;
+        } else *o++ = *p++;
+    }
+    strcpy(o, "{\\p0}");
+    add_event(buf);
 }
-void osd_bar_geometry(int *x, int *y, int *w, int *h)
+
+/* ---------------------------------------------------------------- layout */
+typedef struct R { int x, y, w, h; } R;
+static struct {
+    R seek, play, vicon, vol, audio, subs, fs, menu;
+    int time_x, cy, row_h, rows_vis, n_items, scroll;
+    bool bar;
+    int menu_kind;
+} L;
+
+static int utf8_len(const char *s)
 {
-    bar_geom(x, y, w, h);
-    *y -= (int)(12 * S);
-    *h += (int)(24 * S);
+    int n = 0;
+    for (; *s; s++) if ((*s & 0xC0) != 0x80) n++;
+    return n;
+}
+
+static void ui_layout(const struct OsdState *st)
+{
+    int m = (int)(18 * S), ic = (int)(20 * S), ph = (int)(26 * S);
+    int cy = H - (int)(28 * S);
+    L.bar = st->bar;
+    L.cy = cy;
+    L.seek = (R){ m, H - (int)(60 * S), W - 2 * m, (int)(4 * S) };
+    L.play = (R){ m, cy - ic / 2, ic, ic };
+    L.time_x = m + ic + (int)(14 * S);
+    int x = W - m;
+    L.fs = (R){ x - ic, cy - ic / 2, ic, ic };
+    x -= ic + (int)(16 * S);
+    int sw = (int)(98 * S), aw = (int)(64 * S);
+    L.subs = (R){ x - sw, cy - ph / 2, sw, ph };
+    x -= sw + (int)(8 * S);
+    L.audio = (R){ x - aw, cy - ph / 2, aw, ph };
+    x -= aw + (int)(18 * S);
+    if (W >= (int)(520 * S)) {
+        int vw = (int)(72 * S);
+        L.vol = (R){ x - vw, cy - (int)(2 * S), vw, (int)(4 * S) };
+        x -= vw + (int)(10 * S);
+        L.vicon = (R){ x - ic, cy - ic / 2, ic, ic };
+    } else {
+        L.vol = (R){ 0, 0, 0, 0 };
+        L.vicon = (R){ 0, 0, 0, 0 };
+    }
+    if (W < (int)(330 * S)) L.audio = L.subs = (R){ 0, 0, 0, 0 };
+
+    L.menu_kind = st->bar ? st->menu : 0;
+    L.menu = (R){ 0, 0, 0, 0 };
+    L.n_items = st->n_items;
+    L.scroll = st->menu_scroll;
+    L.rows_vis = 0;
+    if (L.menu_kind && st->n_items > 0) {
+        int chars = 0;
+        for (int i = 0; i < st->n_items; i++) { int c = utf8_len(st->items[i]); if (c > chars) chars = c; }
+        int w = (int)(chars * 8.4 * S + 60 * S);
+        if (w < (int)(210 * S)) w = (int)(210 * S);
+        if (w > W - 2 * m) w = W - 2 * m;
+        R an = L.menu_kind == 1 ? L.audio : L.subs;
+        int right = an.w ? an.x + an.w : W - m;
+        int mx = right - w;
+        if (mx < m) mx = m;
+        L.row_h = (int)(30 * S);
+        int pad = (int)(6 * S), bottom = L.seek.y - (int)(14 * S);
+        int maxh = bottom - (int)(16 * S) - 2 * pad;
+        L.rows_vis = maxh / L.row_h;
+        if (L.rows_vis < 1) L.rows_vis = 1;
+        if (L.rows_vis > st->n_items) L.rows_vis = st->n_items;
+        int h = L.rows_vis * L.row_h + 2 * pad;
+        L.menu = (R){ mx, bottom - h, w, h };
+    }
+}
+
+static bool inside(R r, double x, double y, int grow)
+{
+    return r.w > 0 && x >= r.x - grow && x < r.x + r.w + grow && y >= r.y - grow && y < r.y + r.h + grow;
+}
+
+int osd_hit(double x, double y)
+{
+    if (!L.bar) return HIT_NONE;
+    int g = (int)(6 * S);
+    if (L.menu_kind && inside(L.menu, x, y, 0)) {
+        int row = (int)floor((y - L.menu.y - 6 * S) / L.row_h);
+        if (row >= 0 && row < L.rows_vis) return HIT_ROW0 + row + L.scroll;
+        return HIT_MENU;
+    }
+    if (inside(L.seek, x, y, (int)(11 * S))) return HIT_SEEK;
+    if (inside(L.play, x, y, g)) return HIT_PLAY;
+    if (inside(L.vicon, x, y, g)) return HIT_VOL_ICON;
+    if (inside(L.vol, x, y, (int)(10 * S))) return HIT_VOL;
+    if (inside(L.audio, x, y, 0)) return HIT_AUDIO;
+    if (inside(L.subs, x, y, 0)) return HIT_SUBS;
+    if (inside(L.fs, x, y, g)) return HIT_FS;
+    return HIT_NONE;
+}
+
+double osd_frac(int hit, double x)
+{
+    R r = hit == HIT_VOL ? L.vol : L.seek;
+    if (r.w <= 0) return 0;
+    double f = (x - r.x) / r.w;
+    return f < 0 ? 0 : f > 1 ? 1 : f;
+}
+
+int osd_menu_rows(void) { return L.rows_vis; }
+
+/* rounded rectangle, antialiased corners */
+static void fill_round(R r, int rad, int cr, int cg, int cb, int a)
+{
+    if (r.w <= 0 || r.h <= 0) return;
+    if (rad * 2 > r.h) rad = r.h / 2;
+    if (rad * 2 > r.w) rad = r.w / 2;
+    fill(r.x + rad, r.y, r.w - 2 * rad, r.h, cr, cg, cb, a);
+    for (int j = 0; j < r.h; j++) {
+        int Y = r.y + j;
+        if (Y < 0 || Y >= H) continue;
+        double dy = j < rad ? rad - j - 0.5 : j >= r.h - rad ? j - (r.h - rad) + 0.5 : 0;
+        for (int side = 0; side < 2; side++)
+            for (int i = 0; i < rad; i++) {
+                int X = side ? r.x + r.w - rad + i : r.x + i;
+                if (X < 0 || X >= W) continue;
+                double dx = side ? i + 0.5 : rad - i - 0.5;
+                double d = dy == 0 ? 1 : rad - sqrt(dx * dx + dy * dy) + 0.5;
+                if (d <= 0) continue;
+                int aa = d >= 1 ? a : (int)(a * d);
+                uint8_t *p = pix + ((size_t)Y * W + X) * 4;
+                int ia = 255 - aa;
+                p[0] = cr * aa / 255 + p[0] * ia / 255;
+                p[1] = cg * aa / 255 + p[1] * ia / 255;
+                p[2] = cb * aa / 255 + p[2] * ia / 255;
+                p[3] = aa + p[3] * ia / 255;
+            }
+    }
+    bb_add(r.x, r.y, r.w, r.h);
 }
 
 static uint64_t hash_str(uint64_t h, const char *s)
@@ -397,6 +540,7 @@ static uint64_t hash_str(uint64_t h, const char *s)
     for (; *s; s++) h = (h ^ (uint8_t)*s) * 1099511628211ULL;
     return h * 1099511628211ULL + 7;
 }
+static uint64_t hash_int(uint64_t h, int64_t v) { return (h ^ (uint64_t)v) * 1099511628211ULL + 3; }
 
 static void make_osd_track(void)
 {
@@ -415,6 +559,15 @@ static void make_osd_track(void)
     ass_set_storage_size(r_osd, W, H);
 }
 
+static const char *IC_PLAY = "m 2 0 l 19 10 2 20";
+static const char *IC_PAUSE = "m 2 0 l 8 0 8 20 2 20 m 12 0 l 18 0 18 20 12 20";
+static const char *IC_SPEAKER = "m 0 7 l 5 7 11 2 11 18 5 13 0 13 m 14 6 l 16 6 16 14 14 14 m 18 3 l 20 3 20 17 18 17";
+static const char *IC_MUTED = "m 0 7 l 5 7 11 2 11 18 5 13 0 13 m 13 7 l 14.5 5.5 20 11 18.5 12.5 m 18.5 5.5 l 20 7 14.5 12.5 13 11";
+static const char *IC_FS = "m 0 0 l 7 0 7 2.5 2.5 2.5 2.5 7 0 7 m 13 0 l 20 0 20 7 17.5 7 17.5 2.5 13 2.5 "
+                           "m 0 13 l 2.5 13 2.5 17.5 7 17.5 7 20 0 20 m 17.5 13 l 20 13 20 20 13 20 13 17.5 17.5 17.5";
+static const char *IC_UNFS = "m 4.5 0 l 7 0 7 7 0 7 0 4.5 4.5 4.5 m 13 0 l 15.5 0 15.5 4.5 20 4.5 20 7 13 7 "
+                             "m 0 13 l 7 13 7 20 4.5 20 4.5 15.5 0 15.5 m 13 13 l 20 13 20 15.5 15.5 15.5 15.5 20 13 20";
+
 bool osd_update(const struct OsdState *st, double sub_time,
                 const uint8_t **out, int *stride, int dirty[4], int out_bb[4])
 {
@@ -431,6 +584,7 @@ bool osd_update(const struct OsdState *st, double sub_time,
         ass_set_use_margins(r_sub, 0);
         prev_sig = 0;
     }
+    ui_layout(st);
 
     /* subtitles */
     ASS_Image *sub_img = NULL;
@@ -442,18 +596,18 @@ bool osd_update(const struct OsdState *st, double sub_time,
     if (bact != b_drawn) changed = 1;
 
     /* OSD signature */
-    int bx, by, bw, bh;
-    bar_geom(&bx, &by, &bw, &bh);
-    int fillw = st->dur > 0 ? (int)(bw * fmin(1.0, fmax(0.0, st->pos / st->dur))) : 0;
+    int fillw = st->dur > 0 ? (int)(L.seek.w * fmin(1.0, fmax(0.0, st->pos / st->dur))) : 0;
     uint64_t sig = 1469598103934665603ULL;
-    sig = (sig ^ (st->bar ? 2 : 1)) * 1099511628211ULL;
+    sig = hash_int(sig, st->bar ? 2 : 1);
     if (st->bar) {
-        sig = (sig ^ (uint64_t)(int)st->pos) * 1099511628211ULL;
-        sig = (sig ^ (uint64_t)fillw) * 1099511628211ULL;
-        sig = (sig ^ (uint64_t)(int)st->dur) * 1099511628211ULL;
-        sig = (sig ^ (st->hover_bar ? 5 : 3) ^ (st->paused ? 16 : 0)) * 1099511628211ULL;
+        sig = hash_int(sig, (int)st->pos);
+        sig = hash_int(sig, fillw);
+        sig = hash_int(sig, (int)st->dur);
+        sig = hash_int(sig, st->hover * 8 + st->paused * 4 + st->mute * 2 + st->fullscreen);
+        sig = hash_int(sig, st->volume);
+        sig = hash_int(sig, st->menu * 100000 + st->cur_item * 1000 + st->menu_scroll);
+        if (st->menu) for (int i = 0; i < st->n_items; i++) sig = hash_str(sig, st->items[i]);
         sig = hash_str(sig, st->title);
-        sig = hash_str(sig, st->right);
     }
     sig = hash_str(sig, st->toast);
     sig = hash_str(sig, st->stats);
@@ -461,6 +615,7 @@ bool osd_update(const struct OsdState *st, double sub_time,
     if (!changed && !osd_changed && !force) return false;
     force = false;
 
+    const char *ACC = "\\1c&H288CF2&";
     if (osd_changed) {
         prev_sig = sig;
         ass_flush_events(t_osd);
@@ -468,11 +623,32 @@ bool osd_update(const struct OsdState *st, double sub_time,
         if (st->bar) {
             char a[32], b[32], line[80];
             fmt_time(a, sizeof a, st->pos);
-            if (st->dur > 0) { fmt_time(b, sizeof b, st->dur); snprintf(line, sizeof line, "%s%s / %s", st->paused ? "⏸  " : "", a, b); }
-            else snprintf(line, sizeof line, "%s%s", st->paused ? "⏸  " : "", a);
-            add_text(1, bx, H - 12 * S, 15 * S, NULL, line);
-            add_text(3, bx + bw, H - 12 * S, 15 * S, NULL, st->right);
-            if (st->title) { add_text(7, bx, top, 17 * S, "\\q2", st->title); top += 28 * S; }
+            if (st->dur > 0) { fmt_time(b, sizeof b, st->dur); snprintf(line, sizeof line, "%s / %s", a, b); }
+            else snprintf(line, sizeof line, "%s", a);
+            add_text(4, L.time_x, L.cy, 15 * S, NULL, line);
+            add_icon(L.play.x, L.play.y, L.play.w, false, st->paused ? IC_PLAY : IC_PAUSE);
+            if (L.vicon.w) add_icon(L.vicon.x, L.vicon.y, L.vicon.w, st->mute || st->volume == 0,
+                                    st->mute || st->volume == 0 ? IC_MUTED : IC_SPEAKER);
+            add_icon(L.fs.x, L.fs.y, L.fs.w, false, st->fullscreen ? IC_UNFS : IC_FS);
+            if (L.audio.w) add_text(5, L.audio.x + L.audio.w / 2.0, L.cy, 14 * S, "\\bord0", "Audio");
+            if (L.subs.w) add_text(5, L.subs.x + L.subs.w / 2.0, L.cy, 14 * S, "\\bord0", T("Subtítulos", "Subtitles"));
+            if (L.menu_kind && L.menu.w) {
+                char clip[160];
+                for (int r = 0; r < L.rows_vis; r++) {
+                    int i = r + L.scroll;
+                    if (i >= st->n_items) break;
+                    double ry = L.menu.y + 6 * S + r * L.row_h + L.row_h / 2.0;
+                    snprintf(clip, sizeof clip, "\\bord0\\clip(%d,%d,%d,%d)%s", L.menu.x, L.menu.y,
+                             L.menu.x + L.menu.w - (int)(12 * S), L.menu.y + L.menu.h, i == st->cur_item ? ACC : "");
+                    add_text(4, L.menu.x + 34 * S, ry, 14.5 * S, clip, st->items[i]);
+                }
+                if (st->n_items > L.rows_vis) {
+                    char more[32];
+                    snprintf(more, sizeof more, "%d–%d / %d", L.scroll + 1, L.scroll + L.rows_vis, st->n_items);
+                    add_text(9, L.menu.x + L.menu.w - 10 * S, L.menu.y - 20 * S, 12 * S, NULL, more);
+                }
+            }
+            if (st->title) { add_text(7, L.seek.x, top, 17 * S, "\\q2", st->title); top += 28 * S; }
         }
         if (st->toast) { add_text(7, 18 * S, top, 21 * S, "\\b1", st->toast); top += 32 * S; }
         stats_top = (int)top;
@@ -489,26 +665,11 @@ bool osd_update(const struct OsdState *st, double sub_time,
     if (bact) for (int i = 0; i < bact->n; i++) blit_scaled(&bact->r[i], bact->cw, bact->ch);
     b_drawn = bact;
     blend_ass(sub_img);
-    if (st->bar) {
-        int band = (int)(84 * S);
-        for (int j = 0; j < band; j++)                    /* soft gradient behind the controls */
-            fill(0, H - band + j, W, 1, 0, 0, 0, 190 * (j + 1) / band);
-        if (st->title) {
-            int tb = (int)(56 * S);
-            for (int j = 0; j < tb; j++) fill(0, j, W, 1, 0, 0, 0, 150 * (tb - j) / tb);
-        }
-        int th = st->hover_bar ? bh + (int)(3 * S) : bh, ty = by - (th - bh) / 2;
-        fill(bx, ty, bw, th, 255, 255, 255, 70);
-        fill(bx, ty, fillw, th, 242, 140, 40, 255);
-        if (st->hover_bar) {
-            int k = (int)(13 * S);
-            fill(bx + fillw - k / 2, by + bh / 2 - k / 2, k, k, 255, 255, 255, 255);
-        }
-    }
     if (st->stats && osd_img) {
         int x0 = W, y0 = H, x1 = 0, y1 = 0;
         for (const ASS_Image *i = osd_img; i; i = i->next) {
-            if (i->dst_y < stats_top - (int)(3 * S) || i->dst_y + i->h > H - (int)(50 * S)) continue;
+            if (i->dst_y < stats_top - (int)(3 * S) || i->dst_y + i->h > H - (int)(96 * S)) continue;
+            if (L.menu_kind && i->dst_x + i->w > L.menu.x && i->dst_y + i->h > L.menu.y - (int)(24 * S)) continue;
             if (i->dst_x < x0) x0 = i->dst_x;
             if (i->dst_y < y0) y0 = i->dst_y;
             if (i->dst_x + i->w > x1) x1 = i->dst_x + i->w;
@@ -516,6 +677,66 @@ bool osd_update(const struct OsdState *st, double sub_time,
         }
         int pad = (int)(8 * S);
         if (x1 > x0) fill(x0 - pad, y0 - pad, x1 - x0 + 2 * pad, y1 - y0 + 2 * pad, 0, 0, 0, 150);
+    }
+    if (st->bar) {
+        int band = (int)(110 * S);
+        for (int j = 0; j < band; j++)                    /* soft gradient behind the controls */
+            fill(0, H - band + j, W, 1, 0, 0, 0, 215 * (j + 1) / band);
+        if (st->title) {
+            int tb = (int)(56 * S);
+            for (int j = 0; j < tb; j++) fill(0, j, W, 1, 0, 0, 0, 150 * (tb - j) / tb);
+        }
+        /* seek bar */
+        bool hs = st->hover == HIT_SEEK;
+        int th = hs ? L.seek.h + (int)(3 * S) : L.seek.h, ty = L.seek.y - (th - L.seek.h) / 2;
+        fill_round((R){ L.seek.x, ty, L.seek.w, th }, th / 2, 255, 255, 255, 70);
+        if (fillw > 0) fill_round((R){ L.seek.x, ty, fillw, th }, th / 2, 242, 140, 40, 255);
+        if (hs) {
+            int k = (int)(14 * S);
+            fill_round((R){ L.seek.x + fillw - k / 2, L.seek.y + L.seek.h / 2 - k / 2, k, k }, k / 2, 255, 255, 255, 255);
+        }
+        /* hover halo behind the icon buttons */
+        R halo[3] = { L.play, L.vicon, L.fs };
+        int hcode[3] = { HIT_PLAY, HIT_VOL_ICON, HIT_FS };
+        for (int i = 0; i < 3; i++)
+            if (st->hover == hcode[i] && halo[i].w) {
+                int g = (int)(7 * S);
+                fill_round((R){ halo[i].x - g, halo[i].y - g, halo[i].w + 2 * g, halo[i].h + 2 * g }, (halo[i].w + 2 * g) / 2, 255, 255, 255, 40);
+            }
+        /* volume slider */
+        if (L.vol.w) {
+            int vv = st->mute ? 0 : st->volume > 100 ? 100 : st->volume;
+            int vw = L.vol.w * vv / 100;
+            fill_round(L.vol, L.vol.h / 2, 255, 255, 255, 70);
+            if (vw > 0) fill_round((R){ L.vol.x, L.vol.y, vw, L.vol.h }, L.vol.h / 2, 255, 255, 255, 235);
+            if (st->hover == HIT_VOL) {
+                int k = (int)(11 * S);
+                fill_round((R){ L.vol.x + vw - k / 2, L.vol.y + L.vol.h / 2 - k / 2, k, k }, k / 2, 255, 255, 255, 255);
+            }
+        }
+        /* track buttons */
+        if (L.audio.w) {
+            bool on = st->menu == 1;
+            fill_round(L.audio, L.audio.h / 2, on ? 242 : 255, on ? 140 : 255, on ? 40 : 255, on ? 230 : st->hover == HIT_AUDIO ? 75 : 38);
+        }
+        if (L.subs.w) {
+            bool on = st->menu == 2;
+            fill_round(L.subs, L.subs.h / 2, on ? 242 : 255, on ? 140 : 255, on ? 40 : 255, on ? 230 : st->hover == HIT_SUBS ? 75 : 38);
+        }
+        /* menu */
+        if (L.menu_kind && L.menu.w) {
+            fill_round(L.menu, (int)(12 * S), 22, 22, 26, 238);
+            for (int r = 0; r < L.rows_vis; r++) {
+                int i = r + L.scroll;
+                if (i >= st->n_items) break;
+                R row = { L.menu.x + (int)(6 * S), L.menu.y + (int)(6 * S) + r * L.row_h, L.menu.w - (int)(12 * S), L.row_h };
+                if (st->hover == HIT_ROW0 + i) fill_round(row, (int)(7 * S), 255, 255, 255, 34);
+                if (i == st->cur_item) {
+                    int k = (int)(8 * S);
+                    fill_round((R){ row.x + (int)(10 * S), row.y + row.h / 2 - k / 2, k, k }, k / 2, 242, 140, 40, 255);
+                }
+            }
+        }
     }
     blend_ass(osd_img);
 

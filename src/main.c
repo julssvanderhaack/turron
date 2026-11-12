@@ -28,8 +28,9 @@ static int last_serial;
 static char title[512];
 
 static double bar_until, toast_until, cursor_until;
-static char toast[256], right_text[96], stats[1024];
-static bool show_stats, hover_bar, dragging;
+static char toast[256], stats[1024];
+static bool show_stats, dragging, drag_vol;
+static int menu_kind, menu_scroll, hover_hit;      /* menu: 0 closed, 1 audio, 2 subtitles */
 static double ptr_x, ptr_y, last_click, last_drag_seek, scroll_acc;
 static double last_seek_at, last_seek_target, stats_at;
 static double t_start;
@@ -124,9 +125,7 @@ static void update_title(void)
     snprintf(wt, sizeof wt, "%s — Turrón", title);
     if (gl_ready) wl_set_title(wt);
 }
-/* Short, clean title for MPRIS: no extension, no [group]/(tags) decorations, and
- * elided. Desktop bars scroll long titles continuously, and on a small CPU that
- * animation alone can cost more than decoding the video. */
+/* Clean title for MPRIS: no extension and no [group]/(tags) decorations. */
 static void short_title(char *out, size_t n)
 {
     char buf[512];
@@ -152,11 +151,7 @@ static void short_title(char *out, size_t n)
     }
     if (!strchr(p, ' ')) for (char *c = p; *c; c++) if (*c == '.' || *c == '_') *c = ' ';
     if (!*p) p = title;
-    int max = 24, chars = 0;
-    size_t i = 0;
-    while (p[i] && chars < max) { i++; while ((p[i] & 0xC0) == 0x80) i++; chars++; }
-    while (p[i] && i && p[i - 1] == ' ') i--;
-    snprintf(out, n, "%.*s%s", (int)i, p, p[i] ? "…" : "");
+    snprintf(out, n, "%.250s", p);
 }
 
 static void sync_state(void)
@@ -175,6 +170,7 @@ static bool open_file(int i, double start, int atrack)
     player_close();
     osd_reset();
     ended = false;
+    menu_kind = 0;
     cur_file = i;
     double resumed = -1;
     if (start < 0) {
@@ -242,14 +238,45 @@ static void cycle_subs(void)
     if (n < 0) set_toast("%s", T("Subtítulos: desactivados", "Subtitles: off"));
     else set_toast("%s %s (%d/%d)", T("Subtítulos:", "Subtitles:"), P.stracks[n].label, n + 1, P.n_stracks);
 }
-static void cycle_audio(void)
+static void select_audio(int n)
 {
-    if (P.n_atracks < 2) { set_toast("%s", T("Solo hay una pista de audio", "Only one audio track")); return; }
-    int n = (P.cur_atrack + 1) % P.n_atracks, st = P.want_strack;
+    if (n < 0 || n >= P.n_atracks || n == P.cur_atrack) return;
+    int st = P.want_strack;
     if (open_file(cur_file, player_pos(), n)) {
         P.want_strack = st;
         set_toast("%s %s (%d/%d)", T("Audio:", "Audio:"), P.atracks[n].label, n + 1, P.n_atracks);
     }
+}
+static void select_subs(int n)              /* -1 = off */
+{
+    if (n >= P.n_stracks) return;
+    P.want_strack = n;
+    if (n < 0) set_toast("%s", T("Subtítulos: desactivados", "Subtitles: off"));
+    else set_toast("%s %s (%d/%d)", T("Subtítulos:", "Subtitles:"), P.stracks[n].label, n + 1, P.n_stracks);
+}
+static void cycle_audio(void)
+{
+    if (P.n_atracks < 2) { set_toast("%s", T("Solo hay una pista de audio", "Only one audio track")); return; }
+    select_audio((P.cur_atrack + 1) % P.n_atracks);
+}
+static int menu_count(void)
+{
+    return menu_kind == 1 ? P.n_atracks : menu_kind == 2 ? P.n_stracks + 1 : 0;
+}
+static void open_menu(int kind)
+{
+    menu_kind = menu_kind == kind ? 0 : kind;
+    menu_scroll = 0;
+    if (menu_kind == 1 && !P.n_atracks) { menu_kind = 0; set_toast("%s", T("Sin pistas de audio", "No audio tracks")); }
+    if (menu_kind == 2 && !P.n_stracks) { menu_kind = 0; set_toast("%s", T("Este vídeo no tiene subtítulos", "This video has no subtitles")); }
+    show_bar(2.5);
+}
+static void menu_pick(int i)
+{
+    int kind = menu_kind;
+    menu_kind = 0;
+    if (kind == 1) select_audio(i);
+    else if (kind == 2) select_subs(i - 1);
 }
 
 static void on_key(uint32_t sym, uint32_t mods)
@@ -258,7 +285,11 @@ static void on_key(uint32_t sym, uint32_t mods)
     switch (sym) {
     case XKB_KEY_space: case XKB_KEY_p: case XKB_KEY_k: toggle_pause(); break;
     case XKB_KEY_q: quit = true; break;
-    case XKB_KEY_Escape: if (wl_is_fullscreen()) wl_toggle_fullscreen(); else quit = true; break;
+    case XKB_KEY_Escape:
+        if (menu_kind) menu_kind = 0;
+        else if (wl_is_fullscreen()) wl_toggle_fullscreen();
+        else quit = true;
+        break;
     case XKB_KEY_f: case XKB_KEY_F11: wl_toggle_fullscreen(); break;
     case XKB_KEY_Left: seek_rel(ctrl ? -60 : shift ? -1 : -5, !ctrl); break;
     case XKB_KEY_Right: seek_rel(ctrl ? 60 : shift ? 1 : 5, !ctrl); break;
@@ -270,8 +301,10 @@ static void on_key(uint32_t sym, uint32_t mods)
     case XKB_KEY_Up: case XKB_KEY_plus: case XKB_KEY_KP_Add: change_volume(5); break;
     case XKB_KEY_Down: case XKB_KEY_minus: case XKB_KEY_KP_Subtract: change_volume(-5); break;
     case XKB_KEY_m: g_mute = !g_mute; set_toast("%s", g_mute ? T("Silencio", "Muted") : T("Sonido activado", "Unmuted")); break;
-    case XKB_KEY_s: case XKB_KEY_v: cycle_subs(); break;
+    case XKB_KEY_s: cycle_subs(); break;
     case XKB_KEY_a: cycle_audio(); break;
+    case XKB_KEY_v: open_menu(2); break;
+    case XKB_KEY_u: open_menu(1); break;
     case XKB_KEY_n: case XKB_KEY_greater: if (cur_file + 1 < n_files) open_next(1); break;
     case XKB_KEY_b: case XKB_KEY_less: if (cur_file > 0) open_next(-1); break;
     case XKB_KEY_i: case XKB_KEY_Tab: show_stats = !show_stats; stats_at = 0; break;
@@ -283,43 +316,70 @@ static void on_key(uint32_t sym, uint32_t mods)
     need_redraw = true;
 }
 
-static bool in_bar(double x, double y)
+static void set_volume_frac(double f)
 {
-    int bx, by, bw, bh;
-    osd_bar_geometry(&bx, &by, &bw, &bh);
-    return now_s() < bar_until + 0.3 && y >= by && y <= by + bh && x >= bx - 20 && x <= bx + bw + 20;
-}
-static void seek_from_x(double x, bool exact)
-{
-    int bx, by, bw, bh;
-    osd_bar_geometry(&bx, &by, &bw, &bh);
-    if (P.duration <= 0 || bw <= 0) return;
-    seek_to(P.duration * fmin(1.0, fmax(0.0, (x - bx) / bw)), exact);
+    atomic_store(&g_volume, (int)lrint(f * 100));
+    g_mute = false;
 }
 static void on_motion(double x, double y)
 {
     ptr_x = x; ptr_y = y;
     show_bar(2.5);
     wl_hide_cursor(false);
-    hover_bar = dragging || in_bar(x, y);
-    if (dragging && now_s() - last_drag_seek > 0.12) { last_drag_seek = now_s(); seek_from_x(x, false); }
+    hover_hit = osd_hit(x, y);
+    if (dragging && P.duration > 0 && now_s() - last_drag_seek > 0.12) {
+        last_drag_seek = now_s();
+        seek_to(P.duration * osd_frac(HIT_SEEK, x), false);
+    }
+    if (drag_vol) set_volume_frac(osd_frac(HIT_VOL, x));
+    need_redraw = true;
 }
 static void on_button(int btn, bool pressed, double x, double y)
 {
-    if (btn == 0) {
-        if (pressed && in_bar(x, y)) { dragging = true; last_drag_seek = now_s(); seek_from_x(x, true); return; }
-        if (!pressed) {
-            if (dragging) { dragging = false; seek_from_x(x, true); }
-            return;
-        }
-        double t = now_s();
-        if (t - last_click < 0.35) { toggle_pause(); wl_toggle_fullscreen(); last_click = 0; }
-        else { toggle_pause(); last_click = t; }
-    } else if (btn == 1 && pressed) toggle_pause();
+    if (btn == 0 && !pressed) {
+        if (dragging) { dragging = false; if (P.duration > 0) seek_to(P.duration * osd_frac(HIT_SEEK, x), true); }
+        drag_vol = false;
+        return;
+    }
+    if (!pressed) return;
+    int hit = osd_hit(x, y);
+    hover_hit = hit;
+    need_redraw = true;
+    if (btn != 0) {
+        if (menu_kind) menu_kind = 0;
+        else if (btn == 1 && hit == HIT_NONE) toggle_pause();
+        return;
+    }
+    if (hit >= HIT_ROW0) { menu_pick(hit - HIT_ROW0); return; }
+    switch (hit) {
+    case HIT_MENU: return;
+    case HIT_SEEK:
+        menu_kind = 0;
+        if (P.duration > 0) { dragging = true; last_drag_seek = now_s(); seek_to(P.duration * osd_frac(HIT_SEEK, x), true); }
+        return;
+    case HIT_PLAY: toggle_pause(); return;
+    case HIT_VOL_ICON: g_mute = !g_mute; return;
+    case HIT_VOL: drag_vol = true; set_volume_frac(osd_frac(HIT_VOL, x)); return;
+    case HIT_AUDIO: open_menu(1); return;
+    case HIT_SUBS: open_menu(2); return;
+    case HIT_FS: wl_toggle_fullscreen(); return;
+    default: break;
+    }
+    if (menu_kind) { menu_kind = 0; return; }       /* click outside closes the menu */
+    double t = now_s();
+    if (t - last_click < 0.35) { toggle_pause(); wl_toggle_fullscreen(); last_click = 0; }
+    else { toggle_pause(); last_click = t; }
 }
 static void on_scroll(double dy)
 {
     scroll_acc += dy;
+    if (menu_kind && hover_hit >= HIT_MENU) {
+        int max = menu_count() - osd_menu_rows();
+        while (scroll_acc <= -10) { if (menu_scroll > 0) menu_scroll--; scroll_acc += 10; }
+        while (scroll_acc >= 10) { if (menu_scroll < max) menu_scroll++; scroll_acc -= 10; }
+        need_redraw = true;
+        return;
+    }
     while (scroll_acc <= -10) { change_volume(2); scroll_acc += 10; }
     while (scroll_acc >= 10) { change_volume(-2); scroll_acc -= 10; }
 }
@@ -480,18 +540,29 @@ static double tick(void)
     }
 
     /* overlay */
-    bool bar = t < bar_until || P.paused || dragging;
+    bool bar = t < bar_until || P.paused || dragging || drag_vol || menu_kind;
     if (toast[0] && t >= toast_until) toast[0] = 0;
     if (show_stats && t - stats_at >= 1.0) { stats_at = t; build_stats(); }
     if (!bar && t >= cursor_until) wl_hide_cursor(true);
-    if (g_mute) snprintf(right_text, sizeof right_text, "%s", T("Silencio", "Muted"));
-    else if (atomic_load(&g_volume) != 100) snprintf(right_text, sizeof right_text, "%s %d %%", T("Volumen", "Volume"), atomic_load(&g_volume));
-    else right_text[0] = 0;
+    if (!bar) hover_hit = HIT_NONE;
     double pos = now_s() - last_seek_at < 0.4 && P.await ? last_seek_target : player_pos();
+    static const char *items[MAX_TRACKS + 1];
+    int n_items = 0, cur_item = -1;
+    if (menu_kind == 1) {
+        for (int i = 0; i < P.n_atracks; i++) items[n_items++] = P.atracks[i].label;
+        cur_item = P.cur_atrack;
+    } else if (menu_kind == 2) {
+        items[n_items++] = T("Desactivados", "Off");
+        for (int i = 0; i < P.n_stracks; i++) items[n_items++] = P.stracks[i].label;
+        cur_item = P.want_strack + 1;
+    }
+    if (menu_kind && !n_items) menu_kind = 0;
     struct OsdState st = {
-        .bar = bar, .hover_bar = hover_bar && bar, .paused = P.paused, .pos = pos, .dur = P.duration,
-        .title = title, .toast = toast[0] ? toast : NULL, .right = right_text[0] ? right_text : NULL,
-        .stats = show_stats ? stats : NULL,
+        .bar = bar, .paused = P.paused, .mute = g_mute, .fullscreen = wl_is_fullscreen(),
+        .pos = pos, .dur = P.duration, .volume = atomic_load(&g_volume),
+        .hover = bar ? hover_hit : HIT_NONE, .menu = menu_kind, .items = items, .n_items = n_items,
+        .cur_item = cur_item, .menu_scroll = menu_scroll,
+        .title = title, .toast = toast[0] ? toast : NULL, .stats = show_stats ? stats : NULL,
     };
     if (gl_ready) {
         int x, y, w, h, vw, vh;
@@ -540,8 +611,18 @@ static double inject_keys(double t)
         if (!at) { list = NULL; break; }
         double when = atof(at + 1);
         if (t - t_start < when) return when - (t - t_start);
-        char name[32];
+        char name[48];
         snprintf(name, sizeof name, "%.*s", (int)(at - list), list);
+        double cx, cy;
+        if (sscanf(name, "click:%lf:%lf", &cx, &cy) == 2 || sscanf(name, "move:%lf:%lf", &cx, &cy) == 2) {
+            cx = cx < 0 ? win_w + cx * win_scale : cx * win_scale;
+            cy = cy < 0 ? win_h + cy * win_scale : cy * win_scale;
+            on_motion(cx, cy);
+            if (name[0] == 'c') { on_button(0, true, cx, cy); on_button(0, false, cx, cy); }
+            char *cm = strchr(at, ',');
+            list = cm ? cm + 1 : NULL;
+            continue;
+        }
         uint32_t mods = 0;
         const char *n = name;
         if (!strncmp(n, "C-", 2)) { mods = 2; n += 2; } else if (!strncmp(n, "S-", 2)) { mods = 1; n += 2; }

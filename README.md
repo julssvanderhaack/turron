@@ -18,6 +18,14 @@ modestos: usa la GPU siempre que puede y no hace nada que no haga falta.
   PGS/DVD (bitmap) y archivos `.srt`/`.ass` junto al vídeo.
 - Recuerda por dónde ibas, MPRIS (barra y teclas multimedia), español/inglés.
 
+## Interfaz
+
+Al mover el ratón aparece la barra de controles: reproducir/pausa, tiempo, barra
+de progreso (clic o arrastrar), volumen (clic en el altavoz para silenciar),
+botones **Audio** y **Subtítulos** y pantalla completa. Los dos botones abren un
+menú con las pistas del archivo; la actual va marcada en naranja y se elige con
+un clic. Clic en el vídeo pausa, doble clic alterna pantalla completa.
+
 ## Teclas
 
 | Tecla | Acción |
@@ -29,8 +37,8 @@ modestos: usa la GPU siempre que puede y no hace nada que no haga falta.
 | ↑ / ↓ / rueda | Volumen |
 | `m` | Silencio |
 | `f` / doble clic | Pantalla completa |
-| `s` | Cambiar subtítulos |
-| `a` | Cambiar pista de audio |
+| `s` / `a` | Pasar a la siguiente pista de subtítulos / de audio |
+| `v` / `u` | Abrir el menú de subtítulos / de audio |
 | `n` / `b` | Archivo siguiente / anterior |
 | `i` | Estadísticas (códec, GPU o CPU, fotogramas descartados) |
 | `q` / Esc | Salir |
