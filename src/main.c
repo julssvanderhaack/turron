@@ -727,7 +727,7 @@ int main(int argc, char **argv)
         AVRational sar = P.vid_sar;
         if (sar.num > 0 && sar.den > 0) vw = vw * sar.num / sar.den;
         if (P.rotation == 90 || P.rotation == 270) { double tt = vw; vw = vh; vh = tt; }
-        double k = fmin(1.0, fmin(1280 / vw, 720 / vh));
+        double k = fmin(1.0, fmin(960 / vw, 540 / vh));   /* ~3/4 of a 1280x800 screen: floats centred with a margin */
         w = (int)fmax(320, vw * k);
         h = (int)fmax(180, vh * k);
     }
